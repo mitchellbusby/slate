@@ -1,7 +1,31 @@
 import React, { useState, useCallback, useMemo } from 'react'
-import { Slate, Editable, withReact } from 'slate-react'
-import { Editor, Range, Point, Node, createEditor } from 'slate'
-import { withHistory } from 'slate-history'
+import { Slate, Editable, withReact, ReactEditor } from 'slate-react'
+import {
+  Editor,
+  Range,
+  Point,
+  Node,
+  createEditor,
+  Path,
+  Ancestor,
+  NodeEntry,
+  Transforms,
+} from 'slate'
+import { HistoryEditor, withHistory } from 'slate-history'
+
+const checkAncestors = (
+  rootNode: Node,
+  path: Path,
+  checker: (curr: Ancestor) => boolean
+): NodeEntry | null => {
+  const ancestorEntries = Array.from(
+    Node.ancestors(rootNode, path, { reverse: true })
+  )
+  return (
+    (ancestorEntries.find(nodeEntry => checker(nodeEntry[0])) as NodeEntry) ??
+    null
+  )
+}
 
 const TablesExample = () => {
   const [value, setValue] = useState<Node[]>(initialValue)
@@ -11,14 +35,106 @@ const TablesExample = () => {
     () => withTables(withHistory(withReact(createEditor()))),
     []
   )
+
+  const onSelectionChanged = () => {
+    if (!editor.selection) {
+      return false
+    }
+
+    const { selection } = editor
+
+    const startPoint = selection.anchor
+    const endPoint = selection.focus
+
+    const startNodeEntry = checkAncestors(
+      editor,
+      startPoint.path,
+      t => t.type === 'table'
+    )
+
+    const endNodeEntry = checkAncestors(
+      editor,
+      endPoint.path,
+      t => t.type === 'table'
+    )
+
+    const selectionStartsOrEndsInTable = !!startNodeEntry || !!endNodeEntry
+
+    if (!selectionStartsOrEndsInTable) {
+      return
+    }
+
+    const withinOneTable =
+      !!startNodeEntry &&
+      !!endNodeEntry &&
+      Path.equals(startNodeEntry[1], endNodeEntry[1])
+
+    if (withinOneTable) {
+      return
+    }
+
+    if (startNodeEntry) {
+      console.log('start entry')
+      if (Range.isForward(editor.selection)) {
+        console.log('forward')
+        Transforms.select(editor, {
+          ...selection,
+          anchor: Editor.before(editor, startNodeEntry[1]),
+        })
+      } else {
+        console.log('backwards')
+
+        Transforms.select(editor, {
+          ...selection,
+          anchor: Editor.after(editor, startNodeEntry[1]),
+        })
+      }
+    }
+
+    if (endNodeEntry) {
+      console.log('end entry')
+
+      if (Range.isForward(editor.selection)) {
+        console.log('forward')
+        Transforms.select(editor, {
+          ...selection,
+          focus: Editor.after(editor, endNodeEntry[1]),
+        })
+      } else {
+        console.log('backwards')
+        Transforms.select(editor, {
+          ...selection,
+          focus: Editor.before(editor, endNodeEntry[1]),
+        })
+      }
+    }
+  }
+
+  const onChange = (value: Node[]) => {
+    setValue(value)
+    let shouldTrigger = false
+    for (const operation of editor.operations) {
+      if (operation.type === 'set_selection') {
+        // hook in here and do our own thing
+        shouldTrigger = true
+        break
+      }
+    }
+
+    if (shouldTrigger) {
+      editor.operations = []
+      onSelectionChanged()
+    }
+  }
+
   return (
-    <Slate editor={editor} value={value} onChange={value => setValue(value)}>
+    <Slate editor={editor} value={value} onChange={onChange}>
       <Editable renderElement={renderElement} renderLeaf={renderLeaf} />
     </Slate>
   )
 }
 
-const withTables = editor => {
+const withTables = (editor: Editor & ReactEditor & HistoryEditor) => {
   const { deleteBackward, deleteForward, insertBreak } = editor
 
   editor.deleteBackward = unit => {
